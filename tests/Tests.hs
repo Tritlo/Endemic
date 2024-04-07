@@ -20,6 +20,7 @@ import PropR.Repair
 import PropR.Traversals
 import PropR.Types
 import PropR.Util
+import PropR.Packages
 import GHC (GhcPs, LHsExpr, noExtField, tm_parsed_module, noAnn, reLoc, getLocA)
 import GHC.Plugins (GenLocated (L), getLoc, unLoc)
 import Test.Tasty
@@ -467,7 +468,11 @@ packageTests =
     "Package tests"
     [  localOption (mkTimeout 30_000_000) $
             testCase "Repair Simple Package" $ do
-                error "not implemented"
+                let conf = tESTCONF
+                    -- diffs = "not working"
+                diffs <- repairPackage conf "tests/packages/basic"
+
+                error $ show diffs
         ]
 
 main = defaultMain tests

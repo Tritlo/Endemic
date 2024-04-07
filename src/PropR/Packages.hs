@@ -49,7 +49,8 @@ repairPackage :: Configuration -> FilePath -> IO [String]
 repairPackage conf@Conf {..} target_dir = withCurrentDirectory target_dir $ do
   cabal_file <- findCabalFile
   logStr TRACE $ "Using cabal file " ++ cabal_file
-  g_desc <- readGenericPackageDescription silent cabal_file
+  g_desc@GenericPackageDescription{..} <- readGenericPackageDescription silent cabal_file
+  -- error $ show g_desc
   --   lbi_res <- newIORef Nothing
   --   let hooks =
   --         simpleUserHooks
@@ -65,12 +66,18 @@ repairPackage conf@Conf {..} target_dir = withCurrentDirectory target_dir $ do
         Just
           (testBuildInfo, addHsSourceDir testBuildInfo $ toFilePath mname <.> ".hs")
       testModName _ = Nothing
+      condTestModName (_, CondNode {condTreeData = ts}) = testModName ts
+      condTestModName _ = Nothing
       addHsSourceDir BuildInfo {..} = ((getSymbolicPath dir) </>)
         where
           dir = case hsSourceDirs of
             [d] -> d
             _ -> error "Multiple source dirs not supported!"
-  let found_mods = mapMaybe testModName testSuites
+   -- This is not enough... we need to do a propr (lol) traversal here,
+   -- since the testsuites might be in a condTestSuite. So we want to grab
+   -- everything that has the TestSuite constructor.
+  let found_mods = mapMaybe testModName testSuites 
+                    ++ mapMaybe condTestModName condTestSuites
       non_local_deps BuildInfo {..} = partition (\(Dependency dname _ _) -> dname /= pname) targetBuildDepends
 
   found_tests <- mapM (\(b, p) -> (b,) <$> makeAbsolute p) found_mods
@@ -85,12 +92,12 @@ repairPackage conf@Conf {..} target_dir = withCurrentDirectory target_dir $ do
               . fst
           )
           found_tests
-      m_w_pkgs = zipWith (\(b, m) p -> (m, b, p)) found_tests packages
+      m_w_pkgs = nub $ zipWith (\(b, m) p -> (m, b, p)) found_tests packages
   case m_w_pkgs of
     [] -> error "No repairable testsuite found!"
     -- TODO: Add a test-suite argument to disambiguate when there are multiple
     -- testsuites:
-    (_ : _ : _) -> error "Multiple repairable testsuites found!"
+    (_ : _ : _) -> error $ "Multiple repairable testsuites found!" ++ show m_w_pkgs
     [(testMod, buildInfo, (non_lcl_pkgs, lcl_pkgs))] -> do
       logStr DEBUG testMod
       logStr DEBUG $ show packages
