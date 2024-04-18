@@ -40,7 +40,7 @@ findCabalFile = do
   case mb_cabal_file of
     (_ : _ : _) -> error $ "Multiple cabal files found!"
     [] -> error $ "No cabal file found!"
-    [cabal_file] -> makeAbsolute cabal_file
+    [cabal_file] -> makeRelativeToCurrentDirectory cabal_file
   where
     rev_cabal = reverse ".cabal"
     isCabal = (rev_cabal ==) . take (length rev_cabal) . reverse
@@ -80,7 +80,7 @@ repairPackage conf@Conf {..} target_dir = withCurrentDirectory target_dir $ do
                     ++ mapMaybe condTestModName condTestSuites
       non_local_deps BuildInfo {..} = partition (\(Dependency dname _ _) -> dname /= pname) targetBuildDepends
 
-  found_tests <- mapM (\(b, p) -> (b,) <$> makeAbsolute p) found_mods
+  found_tests <- mapM (\(b, p) -> (b,) <$> makeRelativeToCurrentDirectory p) found_mods
   logStr TRACE $ "Found test modules:"
   mapM_ (logStr DEBUG . show . snd) found_tests
   logStr TRACE $ "Non local deps"
@@ -115,13 +115,13 @@ repairPackage conf@Conf {..} target_dir = withCurrentDirectory target_dir $ do
           test_dirs = hsSourceDirs buildInfo
           dirs = test_dirs ++ lib_dirs
           pkgs = nub $ sort $ non_lcl_pkgs ++ lib_pkgs
-      abs_dirs <- mapM (makeAbsolute . getSymbolicPath) dirs
+      rel_dirs <- mapM (makeRelativeToCurrentDirectory . getSymbolicPath) dirs
       let conf' =
             conf
               { compileConfig =
                   compileConfig
                     { packages = pkgs,
-                      modBase = abs_dirs
+                      modBase = rel_dirs
                     }
               }
       -- TODO: We could instead incorporate the module vs package into

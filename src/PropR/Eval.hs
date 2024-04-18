@@ -40,7 +40,7 @@ import Data.Data.Lens (template, tinplate, uniplate)
 import Data.Dynamic (Dynamic, fromDynamic)
 import Data.Function (on)
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
-import Data.List (groupBy, intercalate, nub, partition, stripPrefix, uncons)
+import Data.List (groupBy, intercalate, nub, partition, stripPrefix, uncons, find)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, isJust, isNothing, mapMaybe)
@@ -72,7 +72,7 @@ import PropR.Types
 import PropR.Util
 import GHC.Rename.Expr (rnLExpr)
 import GHC.Data.StringBuffer (stringToStringBuffer)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, makeAbsolute, removeDirectory, removeDirectoryRecursive, removeFile)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, makeAbsolute, removeDirectory, removeDirectoryRecursive, removeFile, getCurrentDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath
 import System.IO (Handle, hClose, hGetLine, openTempFile)
@@ -283,11 +283,27 @@ getHoleFitsFromError plugRef holeSpanList err =
     sameHole _ _ = False
 
 addTargetGetModName :: Target -> Ghc ModuleName
-addTargetGetModName target = do
-  mnames_before <- Set.fromList . map ms_mod_name . mgModSummaries <$> depanal [] False
+addTargetGetModName target = do 
+  new <- addTargetGetModNames target 
+
+  return $ case targetId target of
+                TargetModule mn -> mn
+                TargetFile fp _ ->
+                    case (find (\ms -> case ml_hs_file (ms_location ms) of
+                                    Just mfp -> mfp == fp
+                                    _ -> False) $ Map.elems new) of
+                                    Just mn -> ms_mod_name mn
+                                    _ -> error "No module with corresponding path loaded!!"
+
+
+
+addTargetGetModNames :: Target -> Ghc (Map ModuleName ModSummary)
+addTargetGetModNames target = do
+  mods_before <- (Map.fromList . map (\ms -> (ms_mod_name ms, ms)) . mgModSummaries) <$> depanal [] False
+  -- mnames_before <- Set.fromList . map ms_mod_name .
   addTarget target
-  mnames_after <- Set.fromList . map ms_mod_name . mgModSummaries <$> depanal [] False
-  return $ Set.findMin $ mnames_after `Set.difference` mnames_before
+  mods_after <- (Map.fromList . map (\ms -> (ms_mod_name ms, ms)) . mgModSummaries) <$> depanal [] False
+  return $  (mods_after `Map.difference` mods_before)
 
 
 -- |
@@ -306,15 +322,18 @@ moduleToProb baseCC@CompConf {tempDirBase = baseTempDir, ..} mod_path mb_target 
   let tdBase = baseTempDir </> modHash </> dropExtensions mod_path
       cc@CompConf {..} = baseCC {tempDirBase = tdBase}
 
+  liftIO $ logStr DEBUG tdBase
+  liftIO $ getCurrentDirectory >>= logStr DEBUG
 
   -- Feed the given Module into GHC
   runGhc' cc {importStmts = importStmts ++ checkImports, randomizeHiDir = False} $ do
     target <- guessTarget mod_path Nothing Nothing
     let target_id = targetId target
     dflags <- getSessionDynFlags
-    liftIO $ logStr TRACE "Loading module targets..."
-
+    liftIO $ logStr TRACE "Loading module targets:"
+    liftIO $ logOut DEBUG target
     mname <- addTargetGetModName target
+    liftIO $ logStr DEBUG "Target added, got..."
     let no_ext = dropExtension mod_path
         thisModBase = case stripPrefix (reverse $ moduleNameSlashes mname) no_ext of
           Just dir -> reverse dir
@@ -324,9 +343,13 @@ moduleToProb baseCC@CompConf {tempDirBase = baseTempDir, ..} mod_path mb_target 
     dflags <- getSessionDynFlags
     setSessionDynFlags dflags {importPaths = importPaths dflags ++ local_paths}
     mnames_after_local <- depanal [] False
+    liftIO $ logOut DEBUG mname
+    liftIO $ logStr DEBUG "Calling load..."
+    liftIO $ mapM (logStr DEBUG) local_paths
     _ <- load LoadAllTargets
     -- Retrieve the parsed module
     liftIO $ logStr TRACE "Parsing module..."
+    liftIO $ logOut DEBUG mname
     modul@ParsedModule {..} <- getModSummary mname >>= parseModule
     liftIO $ logStr TRACE "Type checking module..."
     tc_modul@TypecheckedModule {..} <- typecheckModule modul
@@ -490,6 +513,7 @@ moduleToProb baseCC@CompConf {tempDirBase = baseTempDir, ..} mod_path mb_target 
           getContext >>= setContext . (thisMod :)
           imports <- addPreludeIfNotPresent <$> mapM (fmap IIDecl . parseImportDecl) (importStmts ++ checkImports)
           getContext >>= setContext . ((thisMod : imports) ++)
+          liftIO $ logStr DEBUG $ showUnsafe testTreeList   
           let countExpr =
                 "map (length . unfoldTastyTests) ["
                   ++ intercalate ", " (map showUnsafe testTreeList)
@@ -497,6 +521,8 @@ moduleToProb baseCC@CompConf {tempDirBase = baseTempDir, ..} mod_path mb_target 
           countTrees <- compileExpr countExpr
           let treeLengths :: [Int]
               treeLengths = unsafeCoerce# countTrees
+          liftIO $ logStr DEBUG $ "Got these tests:"
+          liftIO $ logStr DEBUG $ show treeLengths
           return $ Map.fromList $ zip testTreeList treeLengths
         else return Map.empty
 
