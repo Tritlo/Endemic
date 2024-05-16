@@ -511,7 +511,7 @@ findEvaluatedHoles
     liftIO $ mapM_ (logOut DEBUG) failing_traces_that_worked
 
     success_traces <-
-      if useSpectrum
+      if (useSpectrum > 0)
         then do
           liftIO $ logStr TRACE "Running successful props..."
           str <- execTraces $ map (,[]) successful_props
@@ -526,12 +526,12 @@ findEvaluatedHoles
     -- in the sense that we remove only holes which did not get evaluated at all,
     -- so they are definitely not going to matter).
     let fk :: (EExpr, Map (EExpr, SrcAnn AnnListItem) Integer)
-           -> [(SrcAnn AnnListItem, LHsExpr GhcPs)]
+           -> [((SrcAnn AnnListItem, LHsExpr GhcPs),Integer)]
         fk (expr, invokes) | Map.null invokes = []
-        fk (expr, invokes) = mapMaybe toExprHole $ Map.keys invokes
+        fk (expr, invokes) = mapMaybe toExprHole $ Map.toList invokes
           where
             sfe = V.fromList (sanctifyExpr noAnn expr)
-            toExprHole (iv_expr, iv_loc) =
+            toExprHole ((iv_expr, iv_loc),invs) =
               -- We can get a Nothing here if e.g. the evaluated part is with
               -- an operator with precedence, e.g. a ++ b ++ c, because GHC
               -- doesn't do precedence until it renames. We *could* use the
@@ -545,29 +545,60 @@ findEvaluatedHoles
                 Just iv_ind
                   | Just e@(e_loc, _) <- sfe V.!? (iv_ind),
                     isGoodSrcSpan (locA e_loc) ->
-                    Just e
+                    Just (e, invs)
                 _ -> Nothing
               where
                 sf_locs = map (removeBufSpan . getLocA) $ flattenExpr iv_expr
-        non_zero_holes_failing = Set.fromList $ concatMap fk failing_traces_that_worked
-        non_zero_holes_success = Set.fromList $ concatMap fk success_traces
-        non_zero_hole_diff = (non_zero_holes_failing Set.\\ non_zero_holes_success)
+        non_zero_holes_failing = concatMap fk failing_traces_that_worked
+        non_zero_holes_success = concatMap fk success_traces
+        nzhf_set = Set.fromList $ fmap fst $ non_zero_holes_failing
+        nzhs_set = Set.fromList $ fmap fst $ non_zero_holes_success
+        non_zero_hole_diff = (nzhf_set Set.\\ nzhs_set)
     -- nubOrd deduplicates collections of sortable items. it's faster than other dedups.
     --  TODO 9.8: is is zero!!
-    liftIO $ logStr TRACE $ "Found " ++ show (Set.size non_zero_holes_failing) ++ " evaluated holes"
+    liftIO $ logStr TRACE $ "Found " ++ show (Set.size nzhf_set) ++ " evaluated holes"
 
     -- Note: we could also do this for partially failing properties, if we could
     -- convince quickCheck to come up with non-counter-examples (examples?)
-    when useSpectrum $ do
+    when (useSpectrum > 0) $ do
       liftIO $ logStr TRACE "Only in failing props:"
       liftIO $ mapM_ (logOut TRACE) $ Set.toList non_zero_hole_diff
     return $
       Set.toList $
-        if not useSpectrum
-          then non_zero_holes_failing
-          else non_zero_hole_diff
+       if (useSpectrum == 0)
+             then nzhf_set
+             else let spectrum_order =
+                            calcSpectrum 
+                               non_zero_holes_success
+                               non_zero_holes_failing 
+                               (fromIntegral $ length failing_props)
+                               (fromIntegral $ length successful_props)
+                in  Set.fromList $ take useSpectrum $ map fst spectrum_order
 findEvaluatedHoles _ = error "Cannot find evaluated holes of external problems yet!"
 
+
+-- | Uses the tarantula algorithm to calculate the top most suspicious locations
+--   to target.
+calcSpectrum :: Ord a => [(a, Integer)] -> [(a, Integer)] -> Integer -> Integer -> [(a, Float)]
+calcSpectrum successful failing total_failing total_successes =
+         reverse $ sortOn snd $
+            map (\a -> (a, tarantula a)) $ 
+            Set.toList labels
+
+  where  labels = Set.union (Set.fromList $ fmap fst $ successful)
+                            (Set.fromList $ fmap fst $ failing)
+         pass_map = Map.fromList successful
+         fail_map = Map.fromList failing
+         -- TODO: Make the alg configureable.
+         tarantula label = ftf/(ptp + ftf)
+           where passes = fromMaybe 0 $ pass_map Map.!? label
+                 fails =  fromMaybe 0 $ fail_map Map.!? label
+                 ftf = fromInteger fails / fromInteger total_failing
+                 ptp = fromInteger passes / fromInteger total_successes
+
+         
+  -- We use tarantula here, just to keep it simple
+ 
 -- | This method tries to repair a given Problem.
 -- It first creates the program with holes in it and runs it against the properties.
 -- From this, candidates are retrieved of touched holes and fixes are created and run.

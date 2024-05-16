@@ -32,14 +32,18 @@ tests :: TestTree
 tests =
   testGroup
     "Tests"
-    [ mkSimpleModuleTest 240_000_000 "Repair BrokenGCD" "tests/cases/BrokenGCD.hs" (Just "gcd'"),
-      specialTests,
-      tastyFixTests,
-      randTests,
-      properGenTests,
-      genTests,
-      exhaustiveTests,
-      refinementTests
+    [ 
+      mkSimpleModuleTest 240_000_000 "Repair BrokenGCD" "tests/cases/BrokenGCD.hs" (Just "gcd'")
+    , specialTests
+    , tastyFixTests
+    , randTests
+    , properGenTests
+    , genTests
+    , exhaustiveTests
+    , refinementTests
+    , let tccc = (compileConfig tESTCONF) { useSpectrum = 15}
+      in mkSimpleModuleTest' (Just $ tESTCONF { compileConfig =  tccc})
+         480_000_000 "Repair BrokenGCD" "tests/cases/BrokenGCD.hs" (Just "gcd'")
     ]
 
 runGenRepair :: ProblemDescription -> IO (Set EFix)
